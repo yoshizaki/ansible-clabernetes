@@ -1,0 +1,55 @@
+---
+# Phase 5: LoadBalancer MetalLB（L2 mode）
+- name: Phase 5 - MetalLB
+  hosts: controller
+  become: false
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Get latest MetalLB release tag
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/metallb/metallb/releases/latest
+        return_content: true
+      register: metallb_rel
+      delegate_to: localhost
+
+    - name: Set metallb version fact
+      ansible.builtin.set_fact:
+        metallb_ver: "{{ metallb_rel.json.tag_name }}"
+
+    - name: Apply MetalLB native manifest
+      ansible.builtin.command:
+        cmd: "kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/{{ metallb_ver }}/config/manifests/metallb-native.yaml"
+      register: mlb_apply
+      changed_when: "'configured' in mlb_apply.stdout or 'created' in mlb_apply.stdout"
+
+    - name: Wait for MetalLB pods ready
+      ansible.builtin.command: >-
+        kubectl wait --namespace metallb-system
+        --for=condition=ready pod --selector=app=metallb --timeout=180s
+      changed_when: false
+
+    - name: Apply IPAddressPool + L2Advertisement (pool={{ metallb_range }})
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig }}"
+        definition:
+          - apiVersion: metallb.io/v1beta1
+            kind: IPAddressPool
+            metadata:
+              name: lab-pool
+              namespace: metallb-system
+            spec:
+              addresses:
+                - "{{ metallb_range }}"
+          - apiVersion: metallb.io/v1beta1
+            kind: L2Advertisement
+            metadata:
+              name: lab-l2adv
+              namespace: metallb-system
+            spec:
+              ipAddressPools:
+                - lab-pool
+      vars:
+        ansible_python_interpreter: "{{ k8s_python }}"

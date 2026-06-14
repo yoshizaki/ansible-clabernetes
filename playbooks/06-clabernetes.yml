@@ -1,0 +1,64 @@
+---
+# Phase 6: Clabernetes manager 導入（Helm）
+- name: Phase 6 - Clabernetes manager
+  hosts: controller
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Get latest Helm release tag
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/helm/helm/releases/latest
+        return_content: true
+      register: helm_rel
+      delegate_to: localhost
+      become: false
+
+    - name: Install helm binary
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-{{ helm_rel.json.tag_name }}-linux-amd64.tar.gz"
+        dest: /usr/local/bin
+        remote_src: true
+        extra_opts: ["--strip-components=1", "linux-amd64/helm"]
+        creates: /usr/local/bin/helm
+      become: true
+
+    # pending-install/failed で止まった旧リリースを掃除（再実行の冪等性確保）
+    - name: Clean up stale clabernetes helm release
+      ansible.builtin.shell: |
+        st=$(helm status clabernetes -n c9s -o json 2>/dev/null | jq -r '.info.status' 2>/dev/null || echo absent)
+        if [ "$st" != "deployed" ] && [ "$st" != "absent" ]; then
+          helm uninstall clabernetes -n c9s || true
+          echo "uninstalled stale release (was: $st)"
+        fi
+      become: false
+      changed_when: false
+
+    # wait:false（clabernetes-config ConfigMap は manager が起動後に生成するため
+    # helm --wait は待ち切れずタイムアウトする。rollout は後続タスクで確認）
+    - name: Install Clabernetes manager via Helm (v{{ c9s_version }})
+      kubernetes.core.helm:
+        name: clabernetes
+        chart_ref: oci://ghcr.io/srl-labs/clabernetes/clabernetes
+        chart_version: "{{ c9s_version }}"
+        release_namespace: c9s
+        create_namespace: true
+        kubeconfig: "{{ kubeconfig }}"
+        wait: false
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ k8s_python }}"
+
+    - name: Wait for clabernetes-manager rollout
+      ansible.builtin.command: kubectl -n c9s rollout status deploy/clabernetes-manager --timeout=240s
+      become: false
+      changed_when: false
+
+    - name: Show clabernetes pods
+      ansible.builtin.command: kubectl get -n c9s pods -o wide
+      become: false
+      changed_when: false
+      register: c9s_pods
+
+    - ansible.builtin.debug:
+        var: c9s_pods.stdout_lines

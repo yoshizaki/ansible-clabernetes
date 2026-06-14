@@ -1,0 +1,72 @@
+---
+# Phase 2: クラスタ初期化（controller）
+- name: Phase 2 - kubeadm init on controller
+  hosts: controller
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+  tasks:
+    - name: Ensure containerd is fresh (TTRPC shim 予防)
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+
+    - name: kubeadm init (with TTRPC retry)
+      block:
+        - name: kubeadm init
+          ansible.builtin.command:
+            cmd: >-
+              kubeadm init
+              --kubernetes-version=v{{ k8s_version }}
+              --apiserver-advertise-address={{ apiserver_advertise }}
+              --pod-network-cidr={{ pod_cidr }}
+              --service-cidr={{ service_cidr }}
+              --cri-socket=unix:///run/containerd/containerd.sock
+            creates: /etc/kubernetes/admin.conf
+          register: init_out
+      rescue:
+        - name: Reset and restart containerd after init failure
+          ansible.builtin.shell: |
+            kubeadm reset -f
+            systemctl restart containerd
+            sleep 8
+        - name: Retry kubeadm init
+          ansible.builtin.command:
+            cmd: >-
+              kubeadm init
+              --kubernetes-version=v{{ k8s_version }}
+              --apiserver-advertise-address={{ apiserver_advertise }}
+              --pod-network-cidr={{ pod_cidr }}
+              --service-cidr={{ service_cidr }}
+              --cri-socket=unix:///run/containerd/containerd.sock
+            creates: /etc/kubernetes/admin.conf
+
+    # --- kubeconfig 配置（{{ ansible_user }}） ---
+    - name: Create ~/.kube for {{ ansible_user }}
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Copy admin.conf to user kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ kubeconfig }}"
+        remote_src: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+
+    - name: Show nodes
+      ansible.builtin.command: kubectl get nodes
+      become: false
+      changed_when: false
+      register: nodes_out
+
+    - name: Node status
+      ansible.builtin.debug:
+        var: nodes_out.stdout_lines

@@ -1,0 +1,10 @@
+---
+# Clabernetes セットアップ一括（Phase 1〜6 = ラボ構築直前まで）
+#   実行: ansible-playbook playbooks/site.yml
+#   ラボ構築: ansible-playbook playbooks/07-deploy-lab.yml [-e connectivity=vxlan]
+- import_playbook: 01-node-prep.yml
+- import_playbook: 02-control-plane.yml
+- import_playbook: 03-workers.yml
+- import_playbook: 04-calico.yml
+- import_playbook: 05-metallb.yml
+- import_playbook: 06-clabernetes.yml

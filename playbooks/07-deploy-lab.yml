@@ -1,0 +1,77 @@
+---
+# Phase 7: ラボ構築（clabverter 変換 + 接続モード注入 + 適用）
+#   接続モード切替: -e connectivity=vxlan（既定は group_vars の slurpeeth）
+- name: Phase 7 - deploy lab
+  hosts: controller
+  become: false
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Clone SR Linux VLAN handling lab
+      ansible.builtin.git:
+        repo: "{{ lab_repo }}"
+        dest: "{{ lab_dir }}"
+        depth: 1
+        version: HEAD
+
+    - name: Get current uid (clabverter コンテナの --user 用)
+      ansible.builtin.command: id -u
+      register: uid_out
+      changed_when: false
+
+    - name: Run clabverter to generate manifests
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --user
+          - "{{ uid_out.stdout }}"
+          - -v
+          - "{{ lab_dir }}:/clabernetes/work"
+          - --rm
+          - "ghcr.io/srl-labs/clabernetes/clabverter:{{ c9s_version }}"
+          - --stdout
+          - --naming
+          - non-prefixed
+        chdir: "{{ lab_dir }}"
+      register: clabverter_out
+      changed_when: true
+
+    - name: Write manifests.yml (stdout のみ。INFO ログは stderr なので混入しない)
+      ansible.builtin.copy:
+        content: "{{ clabverter_out.stdout }}\n"
+        dest: /tmp/manifests.yml
+        mode: "0644"
+
+    - name: Inject connectivity=slurpeeth into Topology spec
+      ansible.builtin.lineinfile:
+        path: /tmp/manifests.yml
+        insertafter: '^spec:$'
+        line: '  connectivity: slurpeeth'
+        firstmatch: true
+      when: connectivity == 'slurpeeth'
+
+    - name: Apply lab manifests
+      ansible.builtin.command: kubectl apply -f /tmp/manifests.yml
+      register: lab_apply
+      changed_when: "'configured' in lab_apply.stdout or 'created' in lab_apply.stdout"
+
+    - name: Show topology connectivity mode
+      ansible.builtin.command: >-
+        kubectl get topology {{ topology_name }} -n {{ lab_ns }}
+        -o jsonpath='{.spec.connectivity}'
+      register: conn_mode
+      changed_when: false
+
+    - name: Connectivity mode
+      ansible.builtin.debug:
+        msg: "connectivity = {{ conn_mode.stdout | default('vxlan') }}（vxlan の場合は手動修復が別途必要）"
+
+    - name: Show lab pods
+      ansible.builtin.command: kubectl get pods -n {{ lab_ns }} -o wide
+      changed_when: false
+      register: lab_pods
+
+    - ansible.builtin.debug:
+        var: lab_pods.stdout_lines

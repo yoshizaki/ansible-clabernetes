@@ -1,0 +1,46 @@
+---
+# Phase 3: Worker 参加
+- name: Phase 3a - generate join command on controller
+  hosts: controller
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Create join command
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: join_cmd
+      changed_when: false
+
+    - name: Stash join command as fact
+      ansible.builtin.set_fact:
+        kube_join_command: "{{ join_cmd.stdout }}"
+
+- name: Phase 3b - join workers
+  hosts: workers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Ensure containerd fresh on workers (TTRPC 予防)
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+
+    - name: kubeadm join
+      ansible.builtin.command:
+        cmd: "{{ hostvars['controller'].kube_join_command }} --cri-socket=unix:///run/containerd/containerd.sock"
+        creates: /etc/kubernetes/kubelet.conf
+
+- name: Phase 3c - verify
+  hosts: controller
+  become: false
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Get nodes
+      ansible.builtin.command: kubectl get nodes
+      changed_when: false
+      register: nodes_out
+    - ansible.builtin.debug:
+        var: nodes_out.stdout_lines

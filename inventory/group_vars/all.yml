@@ -1,0 +1,41 @@
+---
+# ===== 認証（任意に変更可。実運用では ansible-vault 推奨） =====
+# user / password は自環境に合わせて変更する。
+# password は公開用に **** でマスクしている。実行前に実際の値へ置き換えること。
+ansible_user: admin                 # ★ リモートユーザー（任意に変更可。ホームパス等もこの値を参照）
+ansible_become: true
+ansible_become_method: sudo
+ansible_become_pass: "****"          # ★ sudo パスワード（**** を実値に置換）
+# SSH 鍵配布済みのため ansible_ssh_pass は不要（未配布なら --ask-pass か下行を有効化）
+# ansible_ssh_pass: "****"
+
+# ===== バージョン固定 =====
+k8s_version: "1.36.1"
+k8s_minor: "v1.36"
+containerd_version: "2.3.1"
+c9s_version: "0.5.0"
+
+# ===== ネットワーク設計 =====
+apiserver_advertise: "192.168.30.60"
+pod_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+metallb_range: "192.168.30.200-192.168.30.250"
+
+# ===== MTU（ジャンボフレーム） =====
+# Calico は VXLAN 維持。Pod MTU=pod_mtu を得るには NIC MTU=pod_mtu+50（VXLAN分）。
+# VMware vSwitch が 9050B を転送可能なことは実機検証済み。
+node_nic: "ens33"
+pod_mtu: 9000
+node_mtu: "{{ pod_mtu + 50 }}"
+
+# ===== ラボ =====
+lab_repo: "https://github.com/srl-labs/srlinux-vlan-handling-lab.git"
+lab_dir: "/home/{{ ansible_user }}/srlinux-vlan-handling-lab"
+lab_ns: "c9s-vlan"
+topology_name: "vlan"
+connectivity: "slurpeeth"          # slurpeeth(推奨) | vxlan
+
+# ===== controller 上の k8s 用 Python（kubernetes.core モジュール実行用 venv） =====
+k8s_venv: "/home/{{ ansible_user }}/.k8s-ansible-venv"
+k8s_python: "/home/{{ ansible_user }}/.k8s-ansible-venv/bin/python"
+kubeconfig: "/home/{{ ansible_user }}/.kube/config"

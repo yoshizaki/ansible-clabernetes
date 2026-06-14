@@ -1,0 +1,39 @@
+---
+# 【破壊的】クラスタを 0 ベースに初期化
+#   実行: ansible-playbook playbooks/reset.yml -e reset_confirm=yes
+- name: Reset cluster to zero base
+  hosts: k8s_cluster
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Safety guard
+      ansible.builtin.assert:
+        that: reset_confirm | default('') == 'yes'
+        fail_msg: "破壊的操作です。-e reset_confirm=yes を付けて実行してください"
+
+    - name: kubeadm reset
+      ansible.builtin.command: kubeadm reset -f
+      failed_when: false
+      changed_when: true
+
+    - name: Remove cluster state dirs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/cni/net.d
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - "/home/{{ ansible_user }}/.kube"
+
+    - name: Delete leftover CNI interfaces
+      ansible.builtin.command: "ip link del {{ item }}"
+      loop: [vxlan.calico, cni0, flannel.1]
+      failed_when: false
+      changed_when: false
+
+    - name: Restart containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+      failed_when: false

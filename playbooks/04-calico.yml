@@ -1,0 +1,116 @@
+---
+# Phase 4: CNI Calico（Tigera Operator + カスタム Installation）
+- name: Phase 4a - prepare controller python for kubernetes.core
+  hosts: controller
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install python venv tooling
+      ansible.builtin.apt:
+        name: [python3-venv, python3-pip]
+        state: present
+        lock_timeout: 300
+
+    - name: Create k8s python venv
+      ansible.builtin.command:
+        cmd: "python3 -m venv {{ k8s_venv }}"
+        creates: "{{ k8s_python }}"
+      become: false
+
+    - name: Install python libs for kubernetes.core
+      ansible.builtin.pip:
+        name: [kubernetes, PyYAML, jsonpatch]
+        virtualenv: "{{ k8s_venv }}"
+        state: present
+      become: false
+
+- name: Phase 4b - apply Tigera Operator
+  hosts: controller
+  become: false
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Get latest Calico release tag
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/projectcalico/calico/releases/latest
+        return_content: true
+      register: calico_rel
+      delegate_to: localhost
+
+    - name: Set calico version fact
+      ansible.builtin.set_fact:
+        calico_ver: "{{ calico_rel.json.tag_name }}"
+
+    - name: Apply tigera-operator manifest (server-side, idempotent)
+      ansible.builtin.command:
+        cmd: "kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_ver }}/manifests/tigera-operator.yaml"
+      register: tigera_apply
+      changed_when: "'configured' in tigera_apply.stdout or 'created' in tigera_apply.stdout"
+
+    - name: Wait for tigera-operator deployment
+      ansible.builtin.command: kubectl -n tigera-operator rollout status deploy/tigera-operator --timeout=180s
+      changed_when: false
+
+- name: Phase 4c - restart worker containerd (TTRPC 予防)
+  hosts: workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Restart containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+
+- name: Phase 4d - custom Installation and readiness
+  hosts: controller
+  become: false
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  tasks:
+    - name: Wait for installations CRD to appear (discovery race 回避)
+      ansible.builtin.command: kubectl get crd installations.operator.tigera.io
+      register: crd_check
+      until: crd_check.rc == 0
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Wait CRD established
+      ansible.builtin.command: kubectl wait --for=condition=established crd installations.operator.tigera.io --timeout=120s
+      changed_when: false
+
+    - name: Apply Installation + APIServer (Pod CIDR={{ pod_cidr }})
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig }}"
+        definition:
+          - apiVersion: operator.tigera.io/v1
+            kind: Installation
+            metadata:
+              name: default
+            spec:
+              calicoNetwork:
+                mtu: "{{ pod_mtu }}"
+                ipPools:
+                  - blockSize: 26
+                    cidr: "{{ pod_cidr }}"
+                    encapsulation: VXLANCrossSubnet
+                    natOutgoing: Enabled
+                    nodeSelector: all()
+          - apiVersion: operator.tigera.io/v1
+            kind: APIServer
+            metadata:
+              name: default
+            spec: {}
+      vars:
+        ansible_python_interpreter: "{{ k8s_python }}"
+
+    - name: Wait for all nodes Ready
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=420s
+      changed_when: false
+      register: ready_out
+
+    - ansible.builtin.debug:
+        var: ready_out.stdout_lines

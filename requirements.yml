@@ -1,0 +1,9 @@
+# 追加で必要な Ansible collection（pip 版 ansible には同梱だが再現用に明示）
+#   インストール: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: kubernetes.core      # k8s / helm モジュール（Calico/MetalLB CR・Clabernetes manager）
+    version: ">=5.0.0"
+  - name: community.general    # modprobe など
+    version: ">=8.0.0"
+  - name: ansible.posix        # sysctl など
+    version: ">=1.5.0"
