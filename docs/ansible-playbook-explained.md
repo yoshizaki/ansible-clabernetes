@@ -216,4 +216,4 @@ Phase 1 と reset は `k8s_cluster`、それ以外は `controller`（一部 `wor
 
 ## 関連ドキュメント
 - [Ansible 構築手順](./ansible-setup-guide.md)
-- [Nornir 構築手順](./nornir-setup-guide.md) / [Nornir コード解説](./nornir-code-explained.md)
+
