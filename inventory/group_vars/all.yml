@@ -2,10 +2,10 @@
 # ===== 認証（任意に変更可。実運用では ansible-vault 推奨） =====
 # user / password は自環境に合わせて変更する。
 # password は公開用に **** でマスクしている。実行前に実際の値へ置き換えること。
-ansible_user: admin                 # ★ リモートユーザー（任意に変更可。ホームパス等もこの値を参照）
+ansible_user: admin
 ansible_become: true
 ansible_become_method: sudo
-ansible_become_pass: "****"          # ★ sudo パスワード（**** を実値に置換）
+ansible_become_pass: "****"
 # SSH 鍵配布済みのため ansible_ssh_pass は不要（未配布なら --ask-pass か下行を有効化）
 # ansible_ssh_pass: "****"
 

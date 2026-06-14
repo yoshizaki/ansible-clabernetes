@@ -188,6 +188,39 @@ Phase 1 と reset は `k8s_cluster`、それ以外は `controller`（一部 `wor
 
 ---
 
+## 08-verify-lab.yml — Phase 8（ラボ動作確認・Ansible のみ）
+
+`hosts: controller`, `become: false`, `environment: {KUBECONFIG: ...}`。Ansible だけで
+ラボの疎通を確認する。**追加コレクションは不要**で、既存の kubectl 経路のみで完結する。
+
+**鍵となる前提**: Clabernetes ではノードが **launcher Pod 内の docker コンテナ**として動く。
+よって `kubectl exec <pod> -- sr_cli ...` では launcher 側に入ってしまう。正しくは
+
+```
+kubectl exec -n <ns> <launcher-pod> -- docker exec <node> <cmd>
+```
+
+と **二段 exec**（Pod → 内側の docker コンテナ）でノードに入る。内側コンテナ名は clab のノード名
+（`srl1` / `client1` …）。
+
+| ステップ | 内容 | モジュール / 要点 |
+|---|---|---|
+| 1 pod 解決 | `kubectl get pods` の名前一覧を `grep '^<node>-'` し launcher Pod 名を得て `set_fact` で `pod` dict 化 | `shell`(`set -o pipefail`) / `set_fact`+`combine` |
+| 2 待機 | `kubectl wait --for=condition=Ready` → `sr_cli "show version"` を `until` でリトライ（NOS boot 1〜3 分）| `command` + `until/retries/delay` |
+| 3 制御面 | `show system lldp neighbor`（srl1↔srl2）/ `bridge-1` の MAC テーブルを表示 | `command`(二段 exec) / `debug` |
+| 4 データ面 | `client1 → client2` を ping。untagged は `assert` で合否、VLAN/QinQ は `failed_when:false` で参考表示 | `command`(ping) / `assert` |
+
+**ポイント**
+- `command` モジュールは shlex 解釈なので、`sr_cli "show system lldp neighbor"` の引用符は 1 トークンとして
+  そのまま sr_cli に渡る（exec 経由でシェルを挟まないため引数境界が保たれる）。
+- 判定はトポロジ依存。`bridge-1`(mac-vrf) で `ethernet-1/1.0 ↔ ethernet-1/10.0`（untagged）を
+  L2 ブリッジするため、**untagged(10.1.0.x) を合否判定（assert）**にする。VLAN10/11/QinQ は SRL の
+  VLAN 設定状況に依存するため `failed_when:false` で参考表示（OK/NG どちらでも play は止めない）。
+  構築済みラボでは 4 つとも OK を確認済み。
+- pod 名は `<node>-<rs>-<pod>` 形式なので `grep '^<node>-'` で一意特定（srl1/srl2、client1/client2 を取り違えない）。
+
+---
+
 ## reset.yml — 0 ベース初期化（破壊的）
 
 `hosts: k8s_cluster`, `become: true`。

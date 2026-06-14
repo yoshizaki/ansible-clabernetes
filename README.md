@@ -42,7 +42,10 @@ Kubernetes 上にデプロイするための Playbook 一式です。
 │   ├── 05-metallb.yml           # Phase 5: LoadBalancer (MetalLB)
 │   ├── 06-clabernetes.yml       # Phase 6: Clabernetes manager
 │   ├── 07-deploy-lab.yml        # Phase 7: SR Linux ラボ
+│   ├── 08-verify-lab.yml        # Phase 8: ラボ動作確認（Ansible のみ）
 │   └── reset.yml                # 0 ベース初期化（破壊的）
+├── scripts/
+│   └── set-credentials.sh       # 認証情報・ホストアドレスの一括変換（apply / mask）
 └── docs/
     ├── ansible-setup-guide.md       # 構築手順（詳細）
     └── ansible-playbook-explained.md # Playbook 設計・解説
@@ -73,6 +76,22 @@ python3 -m venv .venv
 
 `inventory/hosts.yml`（ホスト IP）と `inventory/group_vars/all.yml`（認証・バージョン・CIDR）を
 自環境に合わせて編集します。主要変数は `-e key=value` でも上書き可能です。
+
+認証情報とホストアドレスは `scripts/set-credentials.sh` で一括投入できます。
+公開リポジトリにはマスク値（`user=admin` / `password="****"`）を残し、**実行直前に実値を流し込み、
+push 前に `mask` で戻す**運用を想定しています。
+
+```bash
+# 実値を流し込む（ホスト IP の上書きは任意）
+scripts/set-credentials.sh apply -u tomo -p password \
+    [--controller 192.168.30.60 --worker1 192.168.30.61 --worker2 192.168.30.62]
+
+# 現在値の確認
+scripts/set-credentials.sh show
+
+# push 前にパスワードを **** に戻す
+scripts/set-credentials.sh mask
+```
 
 > **認証情報について**
 > - ユーザー名は `ansible_user`（`inventory/group_vars/all.yml`）の **1 箇所**で変更でき、
@@ -107,13 +126,25 @@ $VENV/ansible-playbook playbooks/site.yml
 $VENV/ansible-playbook playbooks/07-deploy-lab.yml
 $VENV/ansible-playbook playbooks/07-deploy-lab.yml -e connectivity=vxlan
 
-# C. 0 ベース初期化（破壊的・要確認フラグ）
+# C. ラボ動作確認（Ansible のみ。LLDP / bridge MAC / client 間 ping）
+$VENV/ansible-playbook playbooks/08-verify-lab.yml
+
+# D. 0 ベース初期化（破壊的・要確認フラグ）
 $VENV/ansible-playbook playbooks/reset.yml -e reset_confirm=yes
 ```
 
 個別 Phase だけ流す場合は `ansible-playbook playbooks/04-calico.yml` のように単体実行も可能（冪等）です。
 
 > SR Linux はブートに 1〜3 分かかります。Pod が `Running` でも内部は起動途中のことがあります。
+> `08-verify-lab.yml` は NOS が応答するまで自動でリトライしてから確認を行います。
+
+> **動作確認（`08-verify-lab.yml`）について**
+> Clabernetes ではノードが launcher Pod 内の docker コンテナとして動くため、
+> `kubectl exec <pod> -- docker exec <node> ...` 経由で SR Linux の `sr_cli` と
+> クライアントの `ping` を実行します（**追加コレクション不要**・既存の kubectl 経路のみ）。
+> untagged（10.1.0.x）を `assert` で合否判定し、VLAN10/11/QinQ は参考表示します
+> （SRL 側に該当 VLAN 設定があれば OK、無ければ NG。いずれも play は止めません）。
+> 構築済みラボでの実行結果は untagged / VLAN10 / VLAN11 / QinQ いずれも OK を確認済み。
 
 ## Playbook 一覧
 
@@ -126,6 +157,7 @@ $VENV/ansible-playbook playbooks/reset.yml -e reset_confirm=yes
 | `05-metallb.yml` | 5 | command(kubectl) / kubernetes.core.k8s |
 | `06-clabernetes.yml` | 6 | unarchive(helm) / kubernetes.core.helm |
 | `07-deploy-lab.yml` | 7 | git / command(clabverter) / lineinfile(slurpeeth 注入) / command(kubectl) |
+| `08-verify-lab.yml` | 8 | command(kubectl exec → docker exec) / assert（LLDP / bridge MAC / ping） |
 | `site.yml` | 1-6 | import_playbook |
 | `reset.yml` | - | command(kubeadm reset) / file |
 

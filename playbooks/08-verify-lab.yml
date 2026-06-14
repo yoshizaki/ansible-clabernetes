@@ -1,0 +1,147 @@
+---
+# Phase 8: ラボ動作確認（Ansible のみ）
+#   実行: ansible-playbook playbooks/08-verify-lab.yml
+#
+# 仕組み:
+#   Clabernetes ではノードは launcher Pod 内の docker コンテナとして動く。
+#   そのため `kubectl exec <launcher-pod> -- docker exec <node> <cmd>` でノードに入る。
+#   - SR Linux : docker exec <node> sr_cli "show ..."
+#   - クライアント(alpine): docker exec <node> ping ...
+#
+# トポロジ（srlinux-vlan-handling-lab）:
+#   client1:eth1 — srl1:e1-1 , srl1:e1-10 — srl2:e1-10 , srl2:e1-1 — client2:eth1
+#   client1=10.1.0.1/30, client2=10.1.0.2/30（untagged。eth1.10/.11/.12.13 は VLAN/QinQ）
+#   srl.cfg は bridge-1(mac-vrf) で e1-1.0 ↔ e1-10.0 を L2 ブリッジ。
+#   → untagged(10.1.0.x) を合否判定（assert）。VLAN10/11/QinQ は SRL の VLAN 設定が
+#     入っていれば OK、無ければ NG。いずれも参考表示（play は止めない）。
+- name: Phase 8 - verify lab (Ansible only)
+  hosts: controller
+  become: false
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  vars:
+    srl_nodes: ["srl1", "srl2"]
+    client_nodes: ["client1", "client2"]
+    ping_count: 3
+    baseline_target: "10.1.0.2"          # client1 -> client2 untagged（合否判定対象）
+    vlan_targets:                         # SRL に該当 VLAN 設定があれば OK（参考表示）
+      - { name: "vlan10",    target: "10.1.1.2" }
+      - { name: "vlan11",    target: "10.1.2.2" }
+      - { name: "qinq12.13", target: "10.1.3.2" }
+  tasks:
+    # --- 1. launcher Pod 名を解決（pod 名は <node>-<hash>-<hash>） ---
+    - name: Resolve launcher pod name for each lab node
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          kubectl get pods -n {{ lab_ns }}
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+          | grep -m1 "^{{ item }}-"
+        executable: /bin/bash
+      loop: "{{ srl_nodes + client_nodes }}"
+      register: podname_out
+      changed_when: false
+
+    - name: Build node -> pod map
+      ansible.builtin.set_fact:
+        pod: "{{ pod | default({}) | combine({ item.item: item.stdout }) }}"
+      loop: "{{ podname_out.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # --- 2. launcher Pod が Ready になるまで待つ ---
+    - name: Wait until launcher pods are Ready
+      ansible.builtin.command: >-
+        kubectl wait -n {{ lab_ns }} --for=condition=Ready pod/{{ pod[item] }} --timeout=300s
+      loop: "{{ srl_nodes + client_nodes }}"
+      changed_when: false
+
+    # --- 3. SR Linux NOS が応答するまで待つ（boot に 1〜3 分） ---
+    - name: Wait until SR Linux NOS is responsive
+      ansible.builtin.command: >-
+        kubectl exec -n {{ lab_ns }} {{ pod[item] }}
+        -- docker exec {{ item }} sr_cli "show version"
+      loop: "{{ srl_nodes }}"
+      register: srl_version
+      until: srl_version is succeeded
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    # --- 4. LLDP 隣接（srl1 ↔ srl2 が e1-10 で見えるはず） ---
+    - name: Collect LLDP neighbors
+      ansible.builtin.command: >-
+        kubectl exec -n {{ lab_ns }} {{ pod[item] }}
+        -- docker exec {{ item }} sr_cli "show system lldp neighbor"
+      loop: "{{ srl_nodes }}"
+      register: lldp
+      changed_when: false
+
+    - name: Show LLDP neighbors
+      ansible.builtin.debug:
+        msg: "{{ ['=== ' ~ item.item ~ ' LLDP neighbor ==='] + item.stdout_lines }}"
+      loop: "{{ lldp.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # --- 5. 疎通テスト（client1 -> client2） ---
+    - name: Baseline connectivity - untagged (client1 -> client2 {{ baseline_target }})
+      ansible.builtin.command: >-
+        kubectl exec -n {{ lab_ns }} {{ pod.client1 }}
+        -- docker exec client1 ping -c {{ ping_count }} -W 2 {{ baseline_target }}
+      register: ping_base
+      changed_when: false
+      failed_when: false
+
+    - name: VLAN / QinQ connectivity (SRL に該当 VLAN が設定済みなら OK)
+      ansible.builtin.command: >-
+        kubectl exec -n {{ lab_ns }} {{ pod.client1 }}
+        -- docker exec client1 ping -c {{ ping_count }} -W 2 {{ item.target }}
+      loop: "{{ vlan_targets }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.target }})"
+      register: ping_vlan
+      changed_when: false
+      failed_when: false
+
+    # --- 6. bridge-1 の MAC テーブル（ping 後＝両クライアントの MAC が学習されているはず） ---
+    - name: Show bridge-1 MAC table (srl1)
+      ansible.builtin.command: >-
+        kubectl exec -n {{ lab_ns }} {{ pod.srl1 }}
+        -- docker exec srl1 sr_cli "show network-instance bridge-1 bridge-table mac-table all"
+      register: mactable
+      changed_when: false
+
+    - name: bridge-1 mac-table
+      ansible.builtin.debug:
+        msg: "{{ mactable.stdout_lines }}"
+
+    # --- 7. 結果サマリ ---
+    - name: Build VLAN result lines
+      ansible.builtin.set_fact:
+        vlan_summary: >-
+          {{ vlan_summary | default([])
+             + [ item.item.name ~ '  ' ~ item.item.target ~ ' : '
+                 ~ ('OK' if item.rc == 0 else 'NG (未疎通/未設定)') ] }}
+      loop: "{{ ping_vlan.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Connectivity summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ ['=== client1 -> client2 疎通結果 ===',
+              'untagged   ' ~ baseline_target ~ ' : '
+              ~ ('OK' if ping_base.rc == 0 else 'NG')]
+             + vlan_summary }}
+
+    - name: Assert baseline (untagged) connectivity
+      ansible.builtin.assert:
+        that:
+          - ping_base.rc == 0
+        success_msg: "✅ ラボ OK: client1 -> client2 untagged 疎通成功（bridge-1 経由）"
+        fail_msg: >-
+          ❌ ラボ NG: untagged 疎通失敗。srl1/srl2 の bridge-1 と
+          ethernet-1/1.0・ethernet-1/10.0 の oper 状態、Pod の Running を確認してください。
+          {{ ping_base.stdout }} {{ ping_base.stderr }}

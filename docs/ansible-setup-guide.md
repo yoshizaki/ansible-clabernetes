@@ -165,7 +165,37 @@ cd ansible
 4. `kubectl apply` で適用
 
 > SR Linux はブートに 1〜3 分かかる。適用直後は Pod が `Running` でも内部が起動途中。
-> 動作確認は **[Nornir 構築手順](./nornir-setup-guide.md)** の `verify_lab.py` で行う。
+> 動作確認は次の **Phase 8（Ansible のみ）** で行う（NOS 応答まで自動リトライ）。
+
+---
+
+## 5.5 ラボ動作確認（Phase 8 / Ansible のみ）
+
+```bash
+cd ansible
+../.venv/bin/ansible-playbook playbooks/08-verify-lab.yml
+```
+
+Clabernetes ではノードが **launcher Pod 内の docker コンテナ**として動くため、
+`kubectl exec <launcher-pod> -- docker exec <node> <cmd>` でノードに入って確認する
+（**追加コレクション不要**。SR Linux は `sr_cli`、クライアントは `ping`）。
+
+処理内容:
+1. `kubectl get pods` から各ノード（srl1/srl2/client1/client2）の launcher Pod 名を解決
+2. `kubectl wait` で Pod Ready 待ち → `sr_cli "show version"` を `until` でリトライし NOS 起動完了を待つ
+3. `show system lldp neighbor`（srl1↔srl2 隣接）/ `bridge-1` の MAC テーブルを表示
+4. `client1 → client2` で ping し、結果をサマリ表示
+
+判定基準（本ラボのトポロジ依存）:
+
+| 宛先 | 経路 | 判定 |
+|------|------|------|
+| 10.1.0.2 | untagged（`bridge-1` で L2 ブリッジ）| **assert で合否判定** |
+| 10.1.1.2 / 10.1.2.2 / 10.1.3.2 | VLAN10 / VLAN11 / QinQ | 参考表示（SRL に該当 VLAN 設定があれば OK）|
+
+> untagged を合否判定の基準とし、VLAN/QinQ は SRL 側の設定状況に依存するため参考表示にしている
+> （未疎通でも Phase 8 は失敗しない）。構築済みラボでの実行では untagged / VLAN10 / VLAN11 / QinQ
+> いずれも OK を確認済み。
 
 ---
 
