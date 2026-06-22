@@ -1,11 +1,8 @@
 # ansible-clabernetes
 
-Ansible で **Kubernetes クラスタ + Clabernetes** を構築し、Nokia SR Linux のネットワークラボ
-（[srlinux-vlan-handling-lab](https://github.com/srl-labs/srlinux-vlan-handling-lab)）を
-Kubernetes 上にデプロイするための Playbook 一式です。
+Ansible で **Kubernetes クラスタ + Clabernetes** を構築し、Nokia SR Linux のネットワークラボ（[srlinux-vlan-handling-lab](https://github.com/srl-labs/srlinux-vlan-handling-lab)）を Kubernetes 上にデプロイするための Playbook 一式です。
 
-制御ホスト（Ansible 実行元）から SSH 経由でエージェントレスに、control-plane 1 台 + worker 2 台を
-セットアップします。
+制御ホスト（Ansible 実行元）から SSH 経由でエージェントレスに、control-plane 1 台と worker 2 台をセットアップします。
 
 ## 構成
 
@@ -74,12 +71,11 @@ python3 -m venv .venv
 
 ### 2. インベントリ / 変数の調整
 
-`inventory/hosts.yml`（ホスト IP）と `inventory/group_vars/all.yml`（認証・バージョン・CIDR）を
-自環境に合わせて編集します。主要変数は `-e key=value` でも上書き可能です。
+`inventory/hosts.yml`（ホスト IP）と `inventory/group_vars/all.yml`（認証情報、バージョン、CIDR）を自環境に合わせて編集します。
+主要変数は `-e key=value` でも上書きできます。
 
 認証情報とホストアドレスは `scripts/set-credentials.sh` で一括投入できます。
-公開リポジトリにはマスク値（`user=admin` / `password="****"`）を残し、**実行直前に実値を流し込み、
-push 前に `mask` で戻す**運用を想定しています。
+公開リポジトリにはマスク値（`user=admin` / `password="****"`）を残し、**実行直前に実値を流し込み、push 前に `mask` で戻す**運用を想定しています。
 
 ```bash
 # 実値を流し込む（ホスト IP の上書きは任意）
@@ -135,16 +131,14 @@ $VENV/ansible-playbook playbooks/reset.yml -e reset_confirm=yes
 
 個別 Phase だけ流す場合は `ansible-playbook playbooks/04-calico.yml` のように単体実行も可能（冪等）です。
 
-> SR Linux はブートに 1〜3 分かかります。Pod が `Running` でも内部は起動途中のことがあります。
-> `08-verify-lab.yml` は NOS が応答するまで自動でリトライしてから確認を行います。
+> SR Linux はブートに 1〜3 分かかります。
+> Pod が `Running` でも内部は起動途中のことがあります。
+> `08-verify-lab.yml` は NOS が応答するまで自動でリトライしてから確認します。
 
 > **動作確認（`08-verify-lab.yml`）について**
-> Clabernetes ではノードが launcher Pod 内の docker コンテナとして動くため、
-> `kubectl exec <pod> -- docker exec <node> ...` 経由で SR Linux の `sr_cli` と
-> クライアントの `ping` を実行します（**追加コレクション不要**・既存の kubectl 経路のみ）。
-> untagged（10.1.0.x）を `assert` で合否判定し、VLAN10/11/QinQ は参考表示します
-> （SRL 側に該当 VLAN 設定があれば OK、無ければ NG。いずれも play は止めません）。
-> 構築済みラボでの実行結果は untagged / VLAN10 / VLAN11 / QinQ いずれも OK を確認済み。
+> Clabernetes ではノードが launcher Pod 内の docker コンテナとして動くため、`kubectl exec <pod> -- docker exec <node> ...` 経由で SR Linux の `sr_cli` とクライアントの `ping` を実行します（**追加コレクション不要**、既存の kubectl 経路のみ）。
+> untagged（10.1.0.x）を `assert` で合否判定し、VLAN10/11/QinQ は参考表示します（SRL 側に該当 VLAN 設定があれば OK、無ければ NG。いずれも play は止めません）。
+> 構築済みラボでの実行結果は untagged / VLAN10 / VLAN11 / QinQ いずれも OK を確認済みです。
 
 ## Playbook 一覧
 
@@ -161,8 +155,7 @@ $VENV/ansible-playbook playbooks/reset.yml -e reset_confirm=yes
 | `site.yml` | 1-6 | import_playbook |
 | `reset.yml` | - | command(kubeadm reset) / file |
 
-> `kubernetes.core` モジュールは controller 上の専用 venv（`04-calico.yml` で自動作成）の Python で
-> 実行します（apt 等は system python のまま）。
+> `kubernetes.core` モジュールは controller 上の専用 venv（`04-calico.yml` で自動作成）の Python で実行します（apt 等は system python のまま）。
 
 ## ドキュメント
 
